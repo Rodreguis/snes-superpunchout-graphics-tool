@@ -1,16 +1,13 @@
 """
-Super Punch-Out!! (SNES) Graphics Codec - CORRECTED v2
+Super Punch-Out!! (SNES) Graphics Codec - CORRECTED v3
 Análise corrigida do assembly CODE_0DF9A4
 
-Formato real:
-- Cada control byte controla 4 valores (nibbles/pares de bits)
-- Cada par de bits (2 bits) indica:
-  00 = usar valor padrão ($C8)
-  01 = ler próximo byte da stream
-  10 = (pode ser repeat ou outra operação)
-  11 = ler próximo byte da stream
-
-O valor padrão ($C8) é armazenado em um registro e pode ser alterado.
+O algoritmo correto é RLE bit-by-bit:
+- Lê um control byte
+- Para cada um dos 8 bits (ASL a cada iteração):
+  * Se carry (bit = 1): lê próximo byte da stream
+  * Se não carry (bit = 0): usa valor padrão armazenado
+- Escreve 8 bytes de saída por control byte
 """
 
 class GraphicsCodec:
@@ -20,6 +17,7 @@ class GraphicsCodec:
     def decompress(data: bytes) -> bytes:
         """
         Decompress Super Punch-Out!! graphics data
+        Algoritmo RLE bit-by-bit baseado no assembly CODE_0DF9A4
         
         Args:
             data: Compressed graphics bytes
@@ -36,7 +34,7 @@ class GraphicsCodec:
         output = bytearray()
         pos = 0
         
-        # Header: primeiros 3 bytes
+        # Primeiros 3 bytes são header
         header_byte = data[pos]  # 0x02
         pos += 1
         size_low = data[pos]
@@ -44,39 +42,28 @@ class GraphicsCodec:
         size_high = data[pos]
         pos += 1
         
-        # Valor padrão inicial
+        # Valor padrão (default value armazenado em $C8)
         default_value = 0x00
         
         while pos < len(data):
             control_byte = data[pos]
             pos += 1
             
-            # Processa 4 pares de bits (do MSB para LSB)
-            for i in range(4):
-                # Extrai par de bits
-                pair = (control_byte >> (6 - i * 2)) & 0x03
+            # Processa cada um dos 8 bits do control byte
+            for bit_index in range(8):
+                # Verifica o bit (começando do MSB)
+                bit = (control_byte >> (7 - bit_index)) & 0x01
                 
-                if pair == 0:
-                    # Usa valor padrão
+                if bit == 0:
+                    # Bit = 0: usa valor padrão
                     output.append(default_value)
-                elif pair == 1 or pair == 3:
-                    # Lê valor da stream
+                else:
+                    # Bit = 1: lê próximo byte da stream
                     if pos >= len(data):
                         raise ValueError(f"Unexpected end of data at position {pos}")
                     value = data[pos]
                     output.append(value)
-                    
-                    # Se pair == 1, esse valor se torna o novo padrão
-                    if pair == 1:
-                        default_value = value
-                    
-                    pos += 1
-                else:  # pair == 2
-                    # Lê valor da stream (pode ser especial)
-                    if pos >= len(data):
-                        raise ValueError(f"Unexpected end of data at position {pos}")
-                    value = data[pos]
-                    output.append(value)
+                    default_value = value  # Atualiza valor padrão
                     pos += 1
         
         return bytes(output)
@@ -111,21 +98,21 @@ class GraphicsCodec:
             control_byte = 0
             literals = bytearray()
             
-            # Processa até 4 valores
-            for i in range(4):
+            # Processa até 8 valores (8 bits)
+            for bit_index in range(8):
                 if pos < len(data):
                     current = data[pos]
                     
                     if current == default_value:
-                        # Usa par 00
-                        pair = 0
+                        # Bit = 0
+                        bit = 0
                     else:
-                        # Usa par 01 (lê e atualiza padrão)
-                        pair = 1
+                        # Bit = 1
+                        bit = 1
                         default_value = current
                         literals.append(current)
                     
-                    control_byte |= (pair << (6 - i * 2))
+                    control_byte |= (bit << (7 - bit_index))
                     pos += 1
                 else:
                     break
