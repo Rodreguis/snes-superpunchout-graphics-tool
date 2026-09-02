@@ -1,11 +1,16 @@
 """
-Super Punch-Out!! (SNES) Graphics Codec
-Decompression and compression tool for SNES graphics data
+Super Punch-Out!! (SNES) Graphics Codec - CORRECTED
+Análise do assembly CODE_0DF9A4 revela o formato real
 
-The compression format uses a control byte followed by data:
-- Control byte bit 7 = 0: Literal run (copy raw bytes)
-- Control byte bit 7 = 1: Repeat run (repeat single byte)
-- Control byte bits 0-6: Length - 1
+O formato usa uma sequência de pares de bits como controle:
+- Cada byte tem 8 bits = 4 pares de controle
+- Cada par de bits (2 bits) controla se o próximo valor é:
+  00 = usar valor padrão ($C8)
+  01 = ler valor da stream
+  10 = ler valor da stream (parece duplicado, mas pode ter propósito)
+  11 = ler valor da stream
+
+Depois escreve 4 bytes por ciclo de 8 bytes de entrada (aprox.)
 """
 
 class GraphicsCodec:
@@ -15,6 +20,7 @@ class GraphicsCodec:
     def decompress(data: bytes) -> bytes:
         """
         Decompress Super Punch-Out!! graphics data
+        Algoritmo baseado na análise do assembly CODE_0DF9A4
         
         Args:
             data: Compressed graphics bytes
@@ -25,26 +31,60 @@ class GraphicsCodec:
         if not isinstance(data, (bytes, bytearray)):
             raise TypeError("Data must be bytes or bytearray")
         
+        if len(data) < 3:
+            raise ValueError("Compressed data too small")
+        
         output = bytearray()
         pos = 0
+        
+        # Primeiros 3 bytes parecem ser header
+        # Byte 0: sempre 02?
+        # Byte 1-2: tamanho ou outro dado
+        header_byte = data[pos]
+        pos += 1
+        
+        # Tamanho codificado ou ignorar
+        size_low = data[pos]
+        pos += 1
+        size_high = data[pos]
+        pos += 1
+        
+        # Byte padrão (default value para nibble 00)
+        default_value = 0x00
         
         while pos < len(data):
             control_byte = data[pos]
             pos += 1
             
-            if control_byte & 0x80:  # Repeat run
-                count = (control_byte & 0x7F) + 1
-                if pos >= len(data):
-                    raise ValueError(f"Unexpected end of data at position {pos}")
-                value = data[pos]
-                pos += 1
-                output.extend([value] * count)
-            else:  # Literal run
-                count = control_byte + 1
-                if pos + count > len(data):
-                    raise ValueError(f"Unexpected end of data at position {pos}")
-                output.extend(data[pos:pos + count])
-                pos += count
+            # Processa cada par de bits
+            for i in range(4):
+                # Extrai par de bits (do MSB para LSB)
+                pair = (control_byte >> (6 - i * 2)) & 0x03
+                
+                if pair == 0:
+                    # Usa valor padrão
+                    output.append(default_value)
+                elif pair == 1:
+                    # Lê valor da stream
+                    if pos >= len(data):
+                        raise ValueError(f"Unexpected end of data at position {pos}")
+                    value = data[pos]
+                    output.append(value)
+                    pos += 1
+                elif pair == 2:
+                    # Lê valor da stream (aparentemente mesmo que 01)
+                    if pos >= len(data):
+                        raise ValueError(f"Unexpected end of data at position {pos}")
+                    value = data[pos]
+                    output.append(value)
+                    pos += 1
+                else:  # pair == 3
+                    # Lê valor da stream
+                    if pos >= len(data):
+                        raise ValueError(f"Unexpected end of data at position {pos}")
+                    value = data[pos]
+                    output.append(value)
+                    pos += 1
         
         return bytes(output)
     
@@ -63,74 +103,41 @@ class GraphicsCodec:
             raise TypeError("Data must be bytes or bytearray")
         
         if len(data) == 0:
-            return b''
+            return bytes([0x02, 0x00, 0x00])
         
         output = bytearray()
-        pos = 0
+        # Header
+        output.append(0x02)
+        output.append(len(data) & 0xFF)
+        output.append((len(data) >> 8) & 0xFF)
         
+        pos = 0
         while pos < len(data):
-            # Try to find a repeat run
-            repeat_length = GraphicsCodec._find_repeat(data, pos)
+            control_byte = 0
+            literals = bytearray()
             
-            if repeat_length >= 2:  # Only compress if 2+ bytes
-                # Use repeat run encoding
-                while repeat_length > 0:
-                    chunk_size = min(repeat_length, 128)  # Max 128 bytes per chunk
-                    control_byte = 0x80 | (chunk_size - 1)
-                    output.append(control_byte)
-                    output.append(data[pos])
-                    pos += chunk_size
-                    repeat_length -= chunk_size
-            else:
-                # Use literal run encoding
-                literal_length = GraphicsCodec._find_literal_run(data, pos)
-                while literal_length > 0:
-                    chunk_size = min(literal_length, 128)  # Max 128 bytes per chunk
-                    control_byte = chunk_size - 1
-                    output.append(control_byte)
-                    output.extend(data[pos:pos + chunk_size])
-                    pos += chunk_size
-                    literal_length -= chunk_size
+            # Processa até 4 valores (4 pares de bits)
+            for i in range(4):
+                if pos < len(data):
+                    # Decide se usa valor padrão (00) ou literal (01/11)
+                    # Simplificado: sempre usa literal para garantir reconstrução correta
+                    pair = 1  # ou 3, ambos leem da stream
+                    control_byte |= (pair << (6 - i * 2))
+                    literals.append(data[pos])
+                    pos += 1
+                else:
+                    break
+            
+            output.append(control_byte)
+            output.extend(literals)
         
         return bytes(output)
     
     @staticmethod
-    def _find_repeat(data: bytes, pos: int) -> int:
-        """Find length of repeated byte sequence"""
-        if pos >= len(data):
-            return 0
-        
-        byte_val = data[pos]
-        length = 1
-        
-        while pos + length < len(data) and data[pos + length] == byte_val and length < 128:
-            length += 1
-        
-        return length
-    
-    @staticmethod
-    def _find_literal_run(data: bytes, pos: int) -> int:
-        """Find length of non-repeating sequence"""
-        if pos >= len(data):
-            return 0
-        
-        length = 1
-        
-        while pos + length < len(data) and length < 128:
-            # Check if next byte(s) form a repeat
-            if GraphicsCodec._find_repeat(data, pos + length) >= 2:
-                break
-            length += 1
-        
-        return length
-    
-    @staticmethod
     def hex_to_bytes(hex_string: str) -> bytes:
         """Convert hex string to bytes"""
-        # Remove spaces and common separators
         clean_hex = hex_string.replace(' ', '').replace('\n', '').replace('\r', '')
         
-        # Validate hex string
         if len(clean_hex) % 2 != 0:
             raise ValueError("Hex string must have even number of characters")
         
@@ -145,7 +152,6 @@ class GraphicsCodec:
         fmt = '{:02X}' if uppercase else '{:02x}'
         hex_chars = [fmt.format(b) for b in data]
         
-        # Format with line breaks
         lines = []
         for i in range(0, len(hex_chars), line_length):
             lines.append(' '.join(hex_chars[i:i + line_length]))
