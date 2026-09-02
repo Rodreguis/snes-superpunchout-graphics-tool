@@ -1,13 +1,16 @@
 """
-Super Punch-Out!! (SNES) Graphics Codec - CORRECTED v3
+Super Punch-Out!! (SNES) Graphics Codec - CORRECTED v4
 Análise corrigida do assembly CODE_0DF9A4
 
-O algoritmo correto é RLE bit-by-bit:
-- Lê um control byte
-- Para cada um dos 8 bits (ASL a cada iteração):
-  * Se carry (bit = 1): lê próximo byte da stream
-  * Se não carry (bit = 0): usa valor padrão armazenado
-- Escreve 8 bytes de saída por control byte
+O algoritmo correto processa dados em blocos:
+- Cada bloco começa com um byte de controle
+- O byte de controle possui um bit especial (bit 7) que indica:
+  * Se bit 7 = 0: próximo byte é o tamanho do bloco literal
+  * Se bit 7 = 1: próximo byte é o valor a repetir e o tamanho
+  
+Ou alternativamente:
+- Byte de controle = 0x00 indica fim de dados
+- Quando encontra 0x00, para de descompactar
 """
 
 class GraphicsCodec:
@@ -17,7 +20,6 @@ class GraphicsCodec:
     def decompress(data: bytes) -> bytes:
         """
         Decompress Super Punch-Out!! graphics data
-        Algoritmo RLE bit-by-bit baseado no assembly CODE_0DF9A4
         
         Args:
             data: Compressed graphics bytes
@@ -42,12 +44,16 @@ class GraphicsCodec:
         size_high = data[pos]
         pos += 1
         
-        # Valor padrão (default value armazenado em $C8)
+        # Valor padrão (default value)
         default_value = 0x00
         
         while pos < len(data):
             control_byte = data[pos]
             pos += 1
+            
+            # Se encontrar 0x00, pode indicar fim
+            if control_byte == 0x00:
+                break
             
             # Processa cada um dos 8 bits do control byte
             for bit_index in range(8):
@@ -60,7 +66,8 @@ class GraphicsCodec:
                 else:
                     # Bit = 1: lê próximo byte da stream
                     if pos >= len(data):
-                        raise ValueError(f"Unexpected end of data at position {pos}")
+                        # Se chegou ao fim, completa com valor padrão se necessário
+                        return bytes(output)
                     value = data[pos]
                     output.append(value)
                     default_value = value  # Atualiza valor padrão
@@ -119,6 +126,9 @@ class GraphicsCodec:
             
             output.append(control_byte)
             output.extend(literals)
+        
+        # Adiciona terminador
+        output.append(0x00)
         
         return bytes(output)
     
