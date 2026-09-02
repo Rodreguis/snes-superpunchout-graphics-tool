@@ -1,16 +1,16 @@
 """
-Super Punch-Out!! (SNES) Graphics Codec - CORRECTED
-Análise do assembly CODE_0DF9A4 revela o formato real
+Super Punch-Out!! (SNES) Graphics Codec - CORRECTED v2
+Análise corrigida do assembly CODE_0DF9A4
 
-O formato usa uma sequência de pares de bits como controle:
-- Cada byte tem 8 bits = 4 pares de controle
-- Cada par de bits (2 bits) controla se o próximo valor é:
+Formato real:
+- Cada control byte controla 4 valores (nibbles/pares de bits)
+- Cada par de bits (2 bits) indica:
   00 = usar valor padrão ($C8)
-  01 = ler valor da stream
-  10 = ler valor da stream (parece duplicado, mas pode ter propósito)
-  11 = ler valor da stream
+  01 = ler próximo byte da stream
+  10 = (pode ser repeat ou outra operação)
+  11 = ler próximo byte da stream
 
-Depois escreve 4 bytes por ciclo de 8 bytes de entrada (aprox.)
+O valor padrão ($C8) é armazenado em um registro e pode ser alterado.
 """
 
 class GraphicsCodec:
@@ -20,7 +20,6 @@ class GraphicsCodec:
     def decompress(data: bytes) -> bytes:
         """
         Decompress Super Punch-Out!! graphics data
-        Algoritmo baseado na análise do assembly CODE_0DF9A4
         
         Args:
             data: Compressed graphics bytes
@@ -37,49 +36,43 @@ class GraphicsCodec:
         output = bytearray()
         pos = 0
         
-        # Primeiros 3 bytes parecem ser header
-        # Byte 0: sempre 02?
-        # Byte 1-2: tamanho ou outro dado
-        header_byte = data[pos]
+        # Header: primeiros 3 bytes
+        header_byte = data[pos]  # 0x02
         pos += 1
-        
-        # Tamanho codificado ou ignorar
         size_low = data[pos]
         pos += 1
         size_high = data[pos]
         pos += 1
         
-        # Byte padrão (default value para nibble 00)
+        # Valor padrão inicial
         default_value = 0x00
         
         while pos < len(data):
             control_byte = data[pos]
             pos += 1
             
-            # Processa cada par de bits
+            # Processa 4 pares de bits (do MSB para LSB)
             for i in range(4):
-                # Extrai par de bits (do MSB para LSB)
+                # Extrai par de bits
                 pair = (control_byte >> (6 - i * 2)) & 0x03
                 
                 if pair == 0:
                     # Usa valor padrão
                     output.append(default_value)
-                elif pair == 1:
+                elif pair == 1 or pair == 3:
                     # Lê valor da stream
                     if pos >= len(data):
                         raise ValueError(f"Unexpected end of data at position {pos}")
                     value = data[pos]
                     output.append(value)
+                    
+                    # Se pair == 1, esse valor se torna o novo padrão
+                    if pair == 1:
+                        default_value = value
+                    
                     pos += 1
-                elif pair == 2:
-                    # Lê valor da stream (aparentemente mesmo que 01)
-                    if pos >= len(data):
-                        raise ValueError(f"Unexpected end of data at position {pos}")
-                    value = data[pos]
-                    output.append(value)
-                    pos += 1
-                else:  # pair == 3
-                    # Lê valor da stream
+                else:  # pair == 2
+                    # Lê valor da stream (pode ser especial)
                     if pos >= len(data):
                         raise ValueError(f"Unexpected end of data at position {pos}")
                     value = data[pos]
@@ -112,18 +105,27 @@ class GraphicsCodec:
         output.append((len(data) >> 8) & 0xFF)
         
         pos = 0
+        default_value = 0x00
+        
         while pos < len(data):
             control_byte = 0
             literals = bytearray()
             
-            # Processa até 4 valores (4 pares de bits)
+            # Processa até 4 valores
             for i in range(4):
                 if pos < len(data):
-                    # Decide se usa valor padrão (00) ou literal (01/11)
-                    # Simplificado: sempre usa literal para garantir reconstrução correta
-                    pair = 1  # ou 3, ambos leem da stream
+                    current = data[pos]
+                    
+                    if current == default_value:
+                        # Usa par 00
+                        pair = 0
+                    else:
+                        # Usa par 01 (lê e atualiza padrão)
+                        pair = 1
+                        default_value = current
+                        literals.append(current)
+                    
                     control_byte |= (pair << (6 - i * 2))
-                    literals.append(data[pos])
                     pos += 1
                 else:
                     break
