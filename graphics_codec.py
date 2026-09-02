@@ -1,18 +1,17 @@
 """
-Super Punch-Out!! (SNES) Graphics Codec - CORRECTED v5
-Análise FINAL do assembly CODE_0DF9A4
+Super Punch-Out!! (SNES) Graphics Codec - CORRECTED v6
+Análise FINAL corrigida
 
-Estrutura correta:
-- Byte 0 ($C4): Tamanho da stream de entrada (número de control bytes)
-- Byte 1: Ignorado ou reservado
-- Byte 2 ($C7): Número de iterações/blocos do loop externo
-- Bytes 3+: Dados comprimidos
-
-Loop externo: repete $C7 vezes
-  Loop interno: processa 8 valores por control byte
-    Para cada bit do control byte (ASL):
-      - Se carry = 0: usar valor padrão ($C8)
-      - Se carry = 1: ler próximo byte, usar e atualizar $C8
+Formato real - Nibble RLE (2 bits por valor):
+- Byte 0 ($C4): Número de control bytes
+- Byte 1: Reservado
+- Byte 2 ($C7): Número de blocos (iterações do loop externo)
+- Cada control byte codifica 4 valores (4 nibbles de 2 bits cada)
+- Cada par de bits (nibble):
+  * 00 = usar valor padrão ($C8)
+  * 01 = ler próximo byte, usar como valor padrão
+  * 10 = usar valor padrão (pode ser variant)
+  * 11 = ler próximo byte da stream
 """
 
 class GraphicsCodec:
@@ -39,11 +38,11 @@ class GraphicsCodec:
         pos = 0
         
         # Header
-        stream_size = data[pos]  # $C4 - número de control bytes
+        num_control_bytes = data[pos]
         pos += 1
-        unknown = data[pos]  # byte não usado ou reservado
+        unknown = data[pos]
         pos += 1
-        num_blocks = data[pos]  # $C7 - número de blocos/iterações
+        num_blocks = data[pos]
         pos += 1
         
         # Valor padrão
@@ -51,28 +50,42 @@ class GraphicsCodec:
         
         # Loop externo: repete num_blocks vezes
         for block_idx in range(num_blocks):
-            # Lê um novo control byte
             if pos >= len(data):
                 break
             
             control_byte = data[pos]
             pos += 1
             
-            # Loop interno: processa 8 bits/valores
-            for bit_idx in range(8):
-                # Verifica carry do ASL
-                bit = (control_byte >> (7 - bit_idx)) & 0x01
+            # Processa 4 pares de bits (nibbles)
+            for nibble_idx in range(4):
+                # Extrai par de bits (2 bits por nibble)
+                nibble = (control_byte >> (6 - nibble_idx * 2)) & 0x03
                 
-                if bit == 0:
-                    # Carry = 0: usa valor padrão
+                if nibble == 0:
+                    # 00: usa valor padrão
                     output.append(default_value)
-                else:
-                    # Carry = 1: lê próximo byte
+                elif nibble == 1:
+                    # 01: lê valor e atualiza padrão
                     if pos >= len(data):
                         return bytes(output)
                     value = data[pos]
                     output.append(value)
-                    default_value = value  # Atualiza padrão
+                    default_value = value
+                    pos += 1
+                elif nibble == 2:
+                    # 10: usa valor padrão (ou read without update)
+                    if pos >= len(data):
+                        output.append(default_value)
+                    else:
+                        value = data[pos]
+                        output.append(value)
+                        pos += 1
+                else:  # nibble == 3
+                    # 11: lê valor da stream (sem atualizar padrão)
+                    if pos >= len(data):
+                        return bytes(output)
+                    value = data[pos]
+                    output.append(value)
                     pos += 1
         
         return bytes(output)
@@ -95,32 +108,31 @@ class GraphicsCodec:
             return bytes([0x00, 0x00, 0x00])
         
         output = bytearray()
-        
         pos = 0
         default_value = 0x00
         control_bytes = bytearray()
         all_literals = bytearray()
         
-        # Processa dados em blocos de 8 valores
+        # Processa dados em blocos de 4 valores
         while pos < len(data):
             control_byte = 0
             literals = bytearray()
             
-            # Processa até 8 valores
-            for bit_idx in range(8):
+            # Processa até 4 valores (4 nibbles)
+            for nibble_idx in range(4):
                 if pos < len(data):
                     current = data[pos]
                     
                     if current == default_value:
-                        # Bit = 0
-                        bit = 0
+                        # 00: valor padrão
+                        nibble = 0
                     else:
-                        # Bit = 1
-                        bit = 1
+                        # 01: ler e atualizar padrão
+                        nibble = 1
                         default_value = current
                         literals.append(current)
                     
-                    control_byte |= (bit << (7 - bit_idx))
+                    control_byte |= (nibble << (6 - nibble_idx * 2))
                     pos += 1
                 else:
                     break
@@ -130,9 +142,9 @@ class GraphicsCodec:
         
         # Header
         num_control_bytes = len(control_bytes)
-        output.append(num_control_bytes & 0xFF)  # $C4
-        output.append(0x00)  # byte não usado
-        output.append(num_control_bytes & 0xFF)  # $C7 (mesmo que $C4)
+        output.append(num_control_bytes & 0xFF)
+        output.append(0x00)
+        output.append(num_control_bytes & 0xFF)
         
         # Dados
         output.extend(control_bytes)
